@@ -1,5 +1,5 @@
 import datetime
-from datetime import time
+from datetime import time, timedelta
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
@@ -59,25 +59,47 @@ selected_tf_label = st.sidebar.selectbox(
 )
 timeframe = timeframe_options[selected_tf_label]
 
-# Set data period based on timeframe limitations
+# 3. Specify History Time Range
+st.sidebar.subheader("2. Historical Date Range")
+# Yahoo Finance limitations: 1m max ~7 days, 5m/15m max ~60 days
 if timeframe == "1m":
-    period = "7d"
-elif timeframe in ["5m", "15m"]:
-    period = "59d"
+  max_days_back = 7
+  st.sidebar.info(
+      "⚠️ Note: Yahoo Finance restricts 1-minute intraday data to the last 7"
+      " days."
+  )
 else:
-    period = "max"
+  max_days_back = 59
+  st.sidebar.info(
+      "⚠️ Note: Yahoo Finance restricts 5m/15m intraday data to the last 59"
+      " days."
+  )
 
-# 3. Specify Opening Range Time Range
-st.sidebar.subheader("2. Opening Range (OR) Settings")
+default_end_date = datetime.date.today()
+default_start_date = default_end_date - timedelta(days=max_days_back - 1)
+
+start_date = st.sidebar.date_input("Start Date", value=default_start_date)
+end_date = st.sidebar.date_input("End Date", value=default_end_date)
+
+# Ensure start date isn't out of bounds for yfinance intraday limits
+if (default_end_date - start_date).days > max_days_back:
+  st.sidebar.warning(
+      f"Date range exceeds Yahoo Finance limit for {selected_tf_label}. Start"
+      f" date has been auto-adjusted."
+  )
+  start_date = default_end_date - timedelta(days=max_days_back - 1)
+
+# 4. Specify Opening Range Time Range
+st.sidebar.subheader("3. Opening Range (OR) Settings")
 or_start_time = st.sidebar.time_input(
     "OR Start Time", value=time(9, 30)
-)  # Default US Market Open (Adjust for Forex if desired)
+)  # Default US Market Open
 or_duration_minutes = st.sidebar.selectbox(
     "OR Duration (Minutes)", options=[5, 15, 30, 60], index=1
 )
 
-# 4. Specify Performance Tracking Time
-st.sidebar.subheader("3. Tracking & Evaluation Window")
+# 5. Specify Performance Tracking Time
+st.sidebar.subheader("4. Tracking & Evaluation Window")
 tracking_end_time = st.sidebar.time_input(
     "Evaluation End Time", value=time(16, 0)
 )  # Default US Market Close
@@ -89,11 +111,18 @@ breakout_definition = st.sidebar.selectbox(
 
 
 @st.cache_data(ttl=3600)
-def load_data(ticker, period, interval):
-  """Fetch data from yfinance"""
+def load_data(ticker, start_dt, end_dt, interval):
+  """Fetch data from yfinance using custom start and end dates"""
   try:
+    # yfinance end date is exclusive, so we add 1 day to include the end date fully
+    adjusted_end_dt = end_dt + timedelta(days=1)
     df = yf.download(
-        ticker, period=period, interval=interval, progress=False, auto_adjust=True
+        ticker,
+        start=start_dt.strftime("%Y-%m-%d"),
+        end=adjusted_end_dt.strftime("%Y-%m-%d"),
+        interval=interval,
+        progress=False,
+        auto_adjust=True,
     )
     if isinstance(df.columns, pd.MultiIndex):
       df.columns = df.columns.get_level_values(0)
@@ -105,12 +134,13 @@ def load_data(ticker, period, interval):
 
 # Load Data
 data_load_state = st.text("Loading market data...")
-df = load_data(symbol, period, timeframe)
+df = load_data(symbol, start_date, end_date, timeframe)
 data_load_state.empty()
 
 if df.empty:
   st.warning(
-      "No data found. Try a different symbol or check your internet connection."
+      "No data found for the selected date range. Try expanding the date range"
+      " or choose a different symbol."
   )
 else:
   # Ensure index is datetime and localized/converted correctly
@@ -210,7 +240,7 @@ else:
   if results_df.empty:
     st.info(
         "No breakouts detected with the current parameters. Try adjusting the"
-        " timeframe, OR duration, or symbol."
+        " date range, timeframe, or OR duration."
     )
   else:
     total_days = len(grouped)
@@ -275,7 +305,7 @@ else:
     st.subheader("📋 Historical Breakdown Log")
     st.dataframe(results_df, use_container_width=True)
 
-    # Plot sample chart for the most recent day
+    # Plot sample chart for the most recent day in the range
     st.markdown("---")
     st.subheader("📈 Latest Day Intraday Chart & Opening Range")
     latest_date = df.index[-1].date()

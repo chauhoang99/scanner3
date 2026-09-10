@@ -19,13 +19,38 @@ st.markdown(
 # --- Sidebar Inputs ---
 st.sidebar.header("1. Configuration")
 
-# 1. Select Symbol
-symbol = st.sidebar.text_input(
-    "Ticker Symbol", value="AAPL", help="e.g., AAPL, TSLA, SPY, QQQ"
+# Categorized Symbol Selection
+symbol_categories = {
+    "Forex Pairs": {
+        "EUR/USD": "EURUSD=X",
+        "GBP/USD": "GBPUSD=X",
+        "USD/JPY": "USDJPY=X",
+        "AUD/USD": "AUDUSD=X",
+        "USD/CAD": "USDCAD=X",
+        "USD/CHF": "USDCHF=X",
+        "NZD/USD": "NZDUSD=X",
+    },
+    "Popular Stocks & ETFs": {
+        "Apple (AAPL)": "AAPL",
+        "Microsoft (MSFT)": "MSFT",
+        "NVIDIA (NVDA)": "NVDA",
+        "Tesla (TSLA)": "TSLA",
+        "Amazon (AMZN)": "AMZN",
+        "S&P 500 ETF (SPY)": "SPY",
+        "Nasdaq ETF (QQQ)": "QQQ",
+        "Bitcoin USD (BTC-USD)": "BTC-USD",
+    },
+}
+
+selected_category = st.sidebar.selectbox(
+    "Asset Category", options=list(symbol_categories.keys())
 )
+symbol_name = st.sidebar.selectbox(
+    "Select Symbol", options=list(symbol_categories[selected_category].keys())
+)
+symbol = symbol_categories[selected_category][symbol_name]
 
 # 2. Select Timeframe
-# Note: yfinance intraday data has limits (e.g., 1m data is limited to last 7 days, 5m/15m up to 60 days)
 timeframe_options = {"1 Minute": "1m", "5 Minutes": "5m", "15 Minutes": "15m"}
 selected_tf_label = st.sidebar.selectbox(
     "Select Timeframe",
@@ -46,7 +71,7 @@ else:
 st.sidebar.subheader("2. Opening Range (OR) Settings")
 or_start_time = st.sidebar.time_input(
     "OR Start Time", value=time(9, 30)
-)  # Default US Market Open
+)  # Default US Market Open (Adjust for Forex if desired)
 or_duration_minutes = st.sidebar.selectbox(
     "OR Duration (Minutes)", options=[5, 15, 30, 60], index=1
 )
@@ -94,7 +119,7 @@ else:
   else:
     df.index = pd.to_datetime(df.index)
 
-  # Convert to US/Eastern (assuming US equities standard for ORB)
+  # Convert to US/Eastern (standard base for tracking market sessions)
   try:
     df.index = df.index.tz_convert("US/Eastern")
   except Exception:
@@ -102,12 +127,9 @@ else:
 
   # --- Core ORB Calculation Engine ---
   results = []
-
-  # Group by trading day
   grouped = df.groupby(df.index.date)
 
   for date, group in grouped:
-    # Filter for the opening range period
     market_open = datetime.datetime.combine(date, or_start_time)
     if group.index.tz is not None:
       market_open = pd.Timestamp(market_open).tz_localize(group.index.tz)
@@ -120,12 +142,14 @@ else:
     or_slice = group[(group.index >= market_open) & (group.index < market_end_dt)]
 
     if len(or_slice) < 2:
-      continue  # Not enough data for this day
+      continue
 
     or_high = or_slice["High"].max()
-    or_low = or_slice["Min"].min() if "Min" in or_slice.columns else or_slice["Low"].min()
+    or_low = (
+        or_slice["Min"].min() if "Min" in or_slice.columns else or_slice["Low"].min()
+    )
 
-    # Tracking window slice (from end of OR to Tracking End Time)
+    # Tracking window slice
     eval_end_dt = datetime.datetime.combine(date, tracking_end_time)
     if group.index.tz is not None:
       eval_end_dt = pd.Timestamp(eval_end_dt).tz_localize(group.index.tz)
@@ -137,16 +161,14 @@ else:
     if tracking_slice.empty:
       continue
 
-    # Check for breakouts and follow-through behavior
-    # We check row by row in the tracking window
-    breakout_type = None  # 'UP' or 'DOWN'
+    breakout_type = None
     breakout_idx = None
 
     for idx, row in tracking_slice.iterrows():
       if breakout_definition == "Close crosses OR boundary":
         cond_up = row["Close"] > or_high
         cond_down = row["Close"] < or_low
-      else:  # High/Low breaches
+      else:
         cond_up = row["High"] > or_high
         cond_down = row["Low"] < or_low
 
@@ -160,17 +182,12 @@ else:
         break
 
     if breakout_type:
-      # Evaluate if price "respected" or "disrespected" the breakout
-      # Respected = Moved further in the breakout direction without re-entering the opposite side significantly.
-      # Disrespected = FAILED breakout (re-crossed back into or past the opposing boundary).
       sub_tracking = tracking_slice[tracking_slice.index >= breakout_idx]
-
       respected = True
       max_extension = 0.0
 
       if breakout_type == "UP":
         max_extension = sub_tracking["High"].max() - or_high
-        # Disrespected if price falls back below the OR low or back inside the range significantly
         if (sub_tracking["Low"] < or_low).any():
           respected = False
       elif breakout_type == "DOWN":
@@ -213,13 +230,13 @@ else:
         else 0
     )
 
-    st.subheader(f"📊 Performance Metrics for {symbol.upper()}")
+    st.subheader(f"📊 Performance Metrics for {symbol_name} ({symbol})")
     col1, col2, col3, col4, col5 = st.columns(5)
 
     col1.metric("Total Days Analyzed", total_days)
     col2.metric("Breakouts Recorded", total_breakouts)
     col3.metric("Respect Rate (Success)", f"{prob_respect:.1f}%")
-    col4.metric("Disrespect Rate (Failure)", f"{prob_disrespect:.1f}%")
+    col4.metric("Disresp. Rate (Failure)", f"{prob_disrespect:.1f}%")
     col5.metric(
         "Breakout Frequency",
         f"{(total_breakouts / total_days * 100 if total_days > 0 else 0):.1f}%",
@@ -258,7 +275,7 @@ else:
     st.subheader("📋 Historical Breakdown Log")
     st.dataframe(results_df, use_container_width=True)
 
-    # Optional: Plot sample chart for the most recent day
+    # Plot sample chart for the most recent day
     st.markdown("---")
     st.subheader("📈 Latest Day Intraday Chart & Opening Range")
     latest_date = df.index[-1].date()
@@ -277,7 +294,6 @@ else:
           )
       )
 
-      # Find OR lines for latest day if available
       market_open_latest = datetime.datetime.combine(latest_date, or_start_time)
       if latest_group.index.tz is not None:
         market_open_latest = pd.Timestamp(market_open_latest).tz_localize(
@@ -309,7 +325,7 @@ else:
         )
 
       fig.update_layout(
-          title=f"{symbol.upper()} Intraday Action on {latest_date}",
+          title=f"{symbol_name} ({symbol}) Intraday Action on {latest_date}",
           xaxis_title="Time",
           yaxis_title="Price",
           template="plotly_dark",
